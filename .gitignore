@@ -1,0 +1,5 @@
+*.pdf
+data
+results/*
+figures/*
+__pycache__/
