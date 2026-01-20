@@ -14,10 +14,10 @@ def fetch_data_from_akshare(symbol, start_date='19900101', end_date=config.CACHE
     print(f"Fetching data for {symbol} from AkShare...")
     df = pd.DataFrame()
     
-    # 1. 尝试作为 A 股股票获取 (后复权)
+    # 1. 尝试作为 A 股股票获取 (前复权)
     try:
-        # adjust='hfq' 后复权
-        df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="hfq")
+        # adjust='qfq' 前复权
+        df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
         if not df.empty:
             print(f"Success: Found Stock data for {symbol}")
     except:
@@ -26,7 +26,7 @@ def fetch_data_from_akshare(symbol, start_date='19900101', end_date=config.CACHE
     # 2. 如果为空，尝试作为 ETF/基金 获取
     if df.empty:
         try:
-             df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="hfq")
+             df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
              if not df.empty:
                 print(f"Success: Found ETF/Fund data for {symbol}")
         except:
@@ -70,7 +70,50 @@ def fetch_data_from_akshare(symbol, start_date='19900101', end_date=config.CACHE
     # 确保 date 列是 datetime 类型
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'])
-        
+
+    # 4. 尝试获取筹码分布数据 (CYQ) 并合并
+    # 仅针对 A 股股票有效，且需要 symbol 是股票代码
+    # 注意：这可能会增加网络请求时间
+    cyq_map = {
+        '获利比例': 'profit_ratio',
+        '平均成本': 'avg_cost',
+        '90成本-低': 'cost90_low',
+        '90成本-高': 'cost90_high',
+        '90集中度': 'concentration90',
+        '70成本-低': 'cost70_low',
+        '70成本-高': 'cost70_high',
+        '70集中度': 'concentration70'
+    }
+    
+    try:
+        # print(f"Fetching CYQ data for {symbol}...")
+        df_cyq = ak.stock_cyq_em(symbol=symbol, adjust="qfq")
+        if df_cyq is not None and not df_cyq.empty:
+            # 统一日期列名
+            cyq_date_col = next((col for col in ['date', '日期'] if col in df_cyq.columns), None)
+            if cyq_date_col:
+                df_cyq.rename(columns={cyq_date_col: 'date'}, inplace=True)
+                df_cyq['date'] = pd.to_datetime(df_cyq['date'])
+                
+                # 重命名关键列以方便使用
+                df_cyq.rename(columns=cyq_map, inplace=True)
+                
+                # 只保留需要的列
+                cols_to_keep = ['date'] + [c for c in cyq_map.values() if c in df_cyq.columns]
+                df_cyq = df_cyq[cols_to_keep]
+                
+                # 合并到主 DataFrame (使用 left join 保留所有行情数据)
+                df = pd.merge(df, df_cyq, on='date', how='left')
+                # print("Success: Merged CYQ data")
+    except Exception as e:
+        print(f"Warning: Failed to fetch/merge CYQ data: {e}")
+
+    # 确保关键列存在 (即使没有抓取到，也填充 NaN)，以保证缓存结构的一致性
+    # 这避免了因为缺少列而导致 load_data 反复强制更新的问题 (例如针对 ETF 或指数)
+    for col in cyq_map.values():
+        if col not in df.columns:
+            df[col] = pd.NA
+
     return df
 
 def load_data(symbol, force_update=False):
@@ -83,7 +126,15 @@ def load_data(symbol, force_update=False):
         # print(f"Loading data for {symbol} from local storage...")
         try:
             df = pd.read_csv(file_path, parse_dates=['date'])
-            return df
+            
+            # 检查缓存有效性：如果当前策略需要筹码分布数据 ('profit_ratio') 但本地缓存没有
+            # 则视为缓存过期，强制刷新
+            if config.STRATEGY_TYPE == 'profit_ratio' and 'profit_ratio' not in df.columns:
+                print(f"Notice: Strategy '{config.STRATEGY_TYPE}' requires 'profit_ratio' but local cache is missing it. Forcing update...")
+                # 不直接 return，让程序继续向下执行网络请求逻辑
+            else:
+                return df
+                
         except Exception as e:
             print(f"Error reading local file for {symbol}: {e}. Will try to refetch.")
     

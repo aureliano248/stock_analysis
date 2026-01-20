@@ -60,14 +60,22 @@ def run_backtest(symbol, start_date, end_date, strategy, strategy_name="Custom S
             shares = amount / close_price
             total_shares += shares
             total_invested += amount
-            logs.append({
+            # 构建日志记录
+            log_item = {
                 'date': current_date,
                 'price': close_price,
                 'invest_amount': amount,
                 'shares_bought': shares,
                 'total_shares': total_shares,
                 'total_invested': total_invested
-            })
+            }
+            
+            # 如果数据中有策略相关的新列，也保存到日志中
+            for col in ['profit_ratio', 'avg_cost', 'cost90_low', 'cost90_high', 'concentration90']:
+                if col in current_row:
+                    log_item[col] = current_row[col]
+            
+            logs.append(log_item)
 
     # 4. 结算
     if total_shares == 0:
@@ -166,6 +174,40 @@ def main():
         strategy = strategies.IntervalFixedInvestment(intervals=params)
         strategy_name = "Interval_Custom"
         
+    elif strategy_type == 'profit_ratio':
+        params = config.PROFIT_RATIO_STRATEGY_PARAMS
+        strategy = strategies.ProfitRatioStrategy(base_amount=params['base_amount'], thresholds=params['thresholds'])
+        strategy_name = "Profit_Ratio_Dynamic"
+
+    elif strategy_type == 'benchmark_drop':
+        params = config.BENCHMARK_DROP_STRATEGY_PARAMS
+        strategy = strategies.BenchmarkDropStrategy(
+            base_amount=params['base_amount'],
+            freq=params['freq'],
+            scale_factor=params['scale_factor']
+        )
+        strategy_name = f"BenchmarkDrop_{params['freq']}_x{params['scale_factor']}"
+
+    elif strategy_type == 'dynamic_benchmark':
+        params = config.DYNAMIC_BENCHMARK_STRATEGY_PARAMS
+        strategy = strategies.DynamicBenchmarkDropStrategy(
+            base_amount=params['base_amount'],
+            freq=params['freq'],
+            benchmark_type=params['benchmark_type'],
+            thresholds=params['thresholds']
+        )
+        strategy_name = f"DynamicBenchmark_{params['benchmark_type']}"
+
+    elif strategy_type == 'quadratic_ma':
+        params = config.QUADRATIC_MA_STRATEGY_PARAMS
+        strategy = strategies.QuadraticMAStrategy(
+            base_amount=params['base_amount'],
+            freq=params['freq'],
+            k_factor=params['k_factor'],
+            max_multiplier=params['max_multiplier']
+        )
+        strategy_name = f"QuadraticMA_K{params['k_factor']}"
+
     else:
         print(f"Error: Unknown strategy type '{strategy_type}' in config.py")
         sys.exit(1)
