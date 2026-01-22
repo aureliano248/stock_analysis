@@ -1,0 +1,1 @@
+1. 执行python之前使用`conda activate stock_analysis`指令激活环境.

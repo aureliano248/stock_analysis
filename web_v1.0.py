@@ -7,11 +7,45 @@ import config
 from main_v2 import run_backtest_v2
 from main_v4_plotly import create_strategy
 import datetime
+import os
+import json
 
 # Initialize the app
 app = dash.Dash(__name__)
 app.title = "Stock Strategy Analyzer"
 server = app.server
+
+# ==========================================
+# Cache Logic
+# ==========================================
+CACHE_FILE = "data/web_input_cache"
+
+def load_input_cache():
+    if not os.path.exists(CACHE_FILE):
+        return []
+    try:
+        with open(CACHE_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_input_cache(symbol):
+    if not symbol:
+        return
+    cache = load_input_cache()
+    # Remove if exists to move to top
+    if symbol in cache:
+        cache.remove(symbol)
+    cache.insert(0, symbol)
+    # Keep only last 6
+    cache = cache[:6]
+    
+    # Ensure directory exists (just in case)
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    
+    with open(CACHE_FILE, 'w') as f:
+        json.dump(cache, f)
+    return cache
 
 # ==========================================
 # Layout
@@ -23,13 +57,17 @@ app.layout = html.Div([
     html.Div([
         html.Label("Symbol: ", style={'fontWeight': 'bold', 'marginRight': '10px'}),
         dcc.Input(
-            id='input-symbol', 
-            type='text', 
-            value=config.SYMBOL, 
+            id='input-symbol',
+            type='text',
+            value=config.SYMBOL,
             placeholder='e.g. 513180',
             debounce=True, # Wait for Enter key
+            list='history-list', # Link to datalist
             style={'marginRight': '10px'}
         ),
+        html.Datalist(id='history-list', children=[
+            html.Option(value=s) for s in load_input_cache()
+        ]),
         html.Button('Confirm / Analyze', id='submit-val', n_clicks=0, style={'cursor': 'pointer'}),
     ], style={'textAlign': 'center', 'marginBottom': '20px', 'padding': '10px', 'backgroundColor': '#f9f9f9'}),
 
@@ -57,6 +95,8 @@ app.layout = html.Div([
     
     # Hidden store to keep track of the current valid symbol to prevent errors during typing
     dcc.Store(id='current-symbol-store'),
+    # Store for debounced relayout data
+    dcc.Store(id='debounced-relayout-data'),
 ], style={'maxWidth': '1200px', 'margin': '0 auto', 'padding': '20px', 'fontFamily': 'Arial, sans-serif'})
 
 
@@ -147,20 +187,22 @@ def generate_strategy_figure(symbol, start_date, end_date):
     fig.update_layout(
         title={
             'text': f"Strategy Comparison ({start_date} to {end_date})",
-            'x': 0.5, 'xanchor': 'center'
+            'x': 0.5, 'xanchor': 'center',
+            'y': 0.95, 'yanchor': 'top'
         },
         xaxis_title="Date",
         yaxis_title="Return Rate (%)",
         hovermode="x unified",
         legend=dict(
-            itemclick="toggle", 
+            itemclick="toggle",
             itemdoubleclick="toggleothers",
-            yanchor="top", y=0.99,
-            xanchor="left", x=0.01,
+            orientation="h", # Horizontal layout
+            yanchor="bottom", y=1.02, # Position above the chart
+            xanchor="center", x=0.5, # Center alignment
             bgcolor="rgba(255, 255, 255, 0.8)"
         ),
         template="plotly_white",
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=80, b=40),
         height=500
     )
     return fig
@@ -170,10 +212,29 @@ def generate_strategy_figure(symbol, start_date, end_date):
 # Callbacks
 # ==========================================
 
-# 1. Update Current Symbol Store & History Chart (Bottom)
+# 0. Clientside Callback for Debouncing Relayout Data (0.3s)
+app.clientside_callback(
+    """
+    function(relayoutData) {
+        return new Promise((resolve) => {
+            if (window.debounceTimer) {
+                clearTimeout(window.debounceTimer);
+            }
+            window.debounceTimer = setTimeout(() => {
+                resolve(relayoutData);
+            }, 500);
+        });
+    }
+    """,
+    Output('debounced-relayout-data', 'data'),
+    Input('history-chart', 'relayoutData')
+)
+
+# 1. Update Current Symbol Store, History Chart (Bottom) & History List
 @app.callback(
     [Output('history-chart', 'figure'),
-     Output('current-symbol-store', 'data')],
+     Output('current-symbol-store', 'data'),
+     Output('history-list', 'children')],
     [Input('submit-val', 'n_clicks')],
     [State('input-symbol', 'value')]
 )
@@ -181,6 +242,10 @@ def update_history(n_clicks, symbol_input):
     # Default to config symbol if input is empty
     symbol = symbol_input if symbol_input else config.SYMBOL
     
+    # Update Cache
+    new_cache = save_input_cache(symbol)
+    datalist_children = [html.Option(value=s) for s in new_cache]
+
     # Load full history (from 1990 to now/future to ensure we get everything)
     # We force 'qfq' (Forward Adjusted) as per main scripts
     end_date_future = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y%m%d')
@@ -196,7 +261,7 @@ def update_history(n_clicks, symbol_input):
 
     if df is None or df.empty:
         fig.add_annotation(text=f"Could not load data for {symbol}", showarrow=False)
-        return fig, symbol
+        return fig, symbol, datalist_children
 
     # Create Line Chart
     fig.add_trace(go.Scatter(
@@ -225,13 +290,13 @@ def update_history(n_clicks, symbol_input):
         margin=dict(l=40, r=40, t=40, b=40)
     )
     
-    return fig, symbol
+    return fig, symbol, datalist_children
 
 
 # 2. Update Strategy Chart (Top) based on History Selection
 @app.callback(
     Output('strategy-chart', 'figure'),
-    [Input('history-chart', 'relayoutData'),
+    [Input('debounced-relayout-data', 'data'),
      Input('current-symbol-store', 'data')]
 )
 def update_strategy(relayoutData, symbol):
