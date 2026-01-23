@@ -97,6 +97,8 @@ app.layout = html.Div([
     dcc.Store(id='current-symbol-store'),
     # Store for debounced relayout data
     dcc.Store(id='debounced-relayout-data'),
+    # Store for loaded data (to avoid repeated loading)
+    dcc.Store(id='data-store'),
 ], style={'maxWidth': '1200px', 'margin': '0 auto', 'padding': '20px', 'fontFamily': 'Arial, sans-serif'})
 
 
@@ -104,7 +106,7 @@ app.layout = html.Div([
 # Helper Functions
 # ==========================================
 
-def generate_strategy_figure(symbol, start_date, end_date):
+def generate_strategy_figure(symbol, start_date, end_date, df=None):
     """
     Runs the backtest logic and generates the strategy comparison figure.
     Closely mimics main_v4_plotly.py logic.
@@ -121,7 +123,7 @@ def generate_strategy_figure(symbol, start_date, end_date):
             if strategy is None:
                 continue
                 
-            df_result = run_backtest_v2(symbol, str(start_date), str(end_date), strategy, strategy_name)
+            df_result = run_backtest_v2(symbol, str(start_date), str(end_date), strategy, strategy_name, df=df)
             
             if df_result is not None and not df_result.empty:
                 results[strategy_name] = df_result
@@ -230,17 +232,22 @@ app.clientside_callback(
     Input('history-chart', 'relayoutData')
 )
 
-# 1. Update Current Symbol Store, History Chart (Bottom) & History List
+# 1. Update Current Symbol Store, History Chart (Bottom) & History List & Data Store
 @app.callback(
     [Output('history-chart', 'figure'),
      Output('current-symbol-store', 'data'),
-     Output('history-list', 'children')],
+     Output('history-list', 'children'),
+     Output('data-store', 'data')],
     [Input('submit-val', 'n_clicks')],
     [State('input-symbol', 'value')]
 )
 def update_history(n_clicks, symbol_input):
     # Default to config symbol if input is empty
     symbol = symbol_input if symbol_input else config.SYMBOL
+    
+    # Get stock name
+    stock_name = data_loader.get_stock_name(symbol)
+    display_name = f"{symbol} - {stock_name}" if stock_name else symbol
     
     # Update Cache
     new_cache = save_input_cache(symbol)
@@ -261,7 +268,10 @@ def update_history(n_clicks, symbol_input):
 
     if df is None or df.empty:
         fig.add_annotation(text=f"Could not load data for {symbol}", showarrow=False)
-        return fig, symbol, datalist_children
+        return fig, symbol, datalist_children, None
+    
+    # Convert df to dict for storage (JSON serializable)
+    df_dict = df.to_dict('records')
 
     # Create Line Chart
     fig.add_trace(go.Scatter(
@@ -275,7 +285,7 @@ def update_history(n_clicks, symbol_input):
     # Configure Layout with Range Slider
     fig.update_layout(
         title={
-            'text': f"Price History: {symbol}",
+            'text': f"Price History: {display_name}",
             'x': 0.5, 'xanchor': 'center'
         },
         xaxis=dict(
@@ -290,16 +300,17 @@ def update_history(n_clicks, symbol_input):
         margin=dict(l=40, r=40, t=40, b=40)
     )
     
-    return fig, symbol, datalist_children
+    return fig, symbol, datalist_children, df_dict
 
 
 # 2. Update Strategy Chart (Top) based on History Selection
 @app.callback(
     Output('strategy-chart', 'figure'),
     [Input('debounced-relayout-data', 'data'),
-     Input('current-symbol-store', 'data')]
+     Input('current-symbol-store', 'data'),
+     Input('data-store', 'data')]
 )
-def update_strategy(relayoutData, symbol):
+def update_strategy(relayoutData, symbol, data_store):
     if not symbol:
         return go.Figure()
 
@@ -342,10 +353,18 @@ def update_strategy(relayoutData, symbol):
     start_date = clean_date(start_date)
     end_date = clean_date(end_date)
     
+    # Convert data_store back to DataFrame if available
+    df = None
+    if data_store:
+        df = pd.DataFrame(data_store)
+        # Convert date column to Timestamp to ensure proper date comparisons in strategies
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+    
     # Ensure dates are within reason (e.g. not before 1990)
     # The backtest engine handles filtering, but we pass strings.
     
-    return generate_strategy_figure(symbol, start_date, end_date)
+    return generate_strategy_figure(symbol, start_date, end_date, df=df)
 
 
 if __name__ == '__main__':

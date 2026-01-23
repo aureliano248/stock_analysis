@@ -7,9 +7,19 @@ import config
 import sys
 import os
 
-def run_backtest_v2(symbol, start_date, end_date, strategy, strategy_name="Custom Strategy"):
+def run_backtest_v2(symbol, start_date, end_date, strategy, strategy_name="Custom Strategy", df=None):
+    """
+    运行回测
+    :param symbol: 标的代码
+    :param start_date: 开始日期 YYYY-MM-DD
+    :param end_date: 结束日期 YYYY-MM-DD
+    :param strategy: 策略对象
+    :param strategy_name: 策略名称 (用于文件命名)
+    :param df: 可选，直接传入 DataFrame，避免重复加载
+    """
     # 1. 加载数据
-    df = data_loader.load_data(symbol)
+    if df is None:
+        df = data_loader.load_data(symbol)
     
     if df is None:
         print(f"Failed to load data for {symbol}")

@@ -1,1 +1,1 @@
-1. 执行python之前使用`conda activate stock_analysis`指令激活环境.
+1. 直接使用`python`即可, 我已经在vscode中配置好了运行环境.
