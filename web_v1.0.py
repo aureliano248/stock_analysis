@@ -245,10 +245,6 @@ def update_history(n_clicks, symbol_input):
     # Default to config symbol if input is empty
     symbol = symbol_input if symbol_input else config.SYMBOL
     
-    # Get stock name
-    stock_name = data_loader.get_stock_name(symbol)
-    display_name = f"{symbol} - {stock_name}" if stock_name else symbol
-    
     # Update Cache
     new_cache = save_input_cache(symbol)
     datalist_children = [html.Option(value=s) for s in new_cache]
@@ -257,12 +253,21 @@ def update_history(n_clicks, symbol_input):
     # We force 'qfq' (Forward Adjusted) as per main scripts
     end_date_future = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y%m%d')
     
+    stock_name = None
     try:
         # NOTE: data_loader.load_data handles caching and fetching
-        df = data_loader.load_data(symbol, start_date='19900101', end_date=end_date_future, adjust='qfq')
+        # load_data now returns (DataFrame, stock_name) tuple
+        result = data_loader.load_data(symbol, start_date='19900101', end_date=end_date_future, adjust='qfq')
+        if result is not None:
+            df, stock_name = result
+        else:
+            df = None
     except Exception as e:
         print(f"Error loading data: {e}")
         df = None
+    
+    display_name = f"{symbol} - {stock_name}" if stock_name else symbol
+    print(f"Debug: Stock name for '{symbol}': {stock_name}")
 
     fig = go.Figure()
 

@@ -19,7 +19,11 @@ def run_backtest_v2(symbol, start_date, end_date, strategy, strategy_name="Custo
     """
     # 1. 加载数据
     if df is None:
-        df = data_loader.load_data(symbol)
+        result = data_loader.load_data(symbol)
+        if result is not None:
+            df, stock_name = result
+        else:
+            df = None
     
     if df is None:
         print(f"Failed to load data for {symbol}")

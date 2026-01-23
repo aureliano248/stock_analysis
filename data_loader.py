@@ -3,6 +3,10 @@ import pandas as pd
 import akshare as ak
 import config
 import datetime
+import json
+
+# 缓存文件中存储股票名字的文件名后缀
+NAME_CACHE_SUFFIX = '.name'
 
 def fetch_data_from_akshare(symbol, start_date='19900101', end_date=config.CACHE_END_DATE, adjust='qfq'):
     """
@@ -248,12 +252,14 @@ def fetch_data_from_akshare(symbol, start_date='19900101', end_date=config.CACHE
         if col not in df.columns:
             df[col] = pd.NA
 
-    return df
+    return df, get_stock_name(clean_symbol)
 
 def load_data(symbol, start_date='19900101', end_date=None, adjust='qfq', force_update=False):
     """
     加载数据。如果本地存在则读取，否则从网络获取并保存。
     支持缓存验证和自动更新。
+    
+    返回: (DataFrame, stock_name) 元组
     """
     if end_date is None:
         end_date = config.CACHE_END_DATE
@@ -275,9 +281,25 @@ def load_data(symbol, start_date='19900101', end_date=None, adjust='qfq', force_
         filename = f"{clean_symbol}_{adjust}.csv"
     
     file_path = os.path.join(config.DATA_DIR, filename)
+    name_cache_path = os.path.join(config.DATA_DIR, clean_symbol + NAME_CACHE_SUFFIX)
     
     # Check if cache exists
     if os.path.exists(file_path) and not force_update:
+        stock_name = None
+        # 尝试从名字缓存文件读取
+        if os.path.exists(name_cache_path):
+            try:
+                with open(name_cache_path, 'r', encoding='utf-8') as f:
+                    stock_name = f.read().strip()
+                    if not stock_name:
+                        stock_name = None
+            except:
+                pass
+        
+        # 如果 .name 缓存文件中没有找到，尝试从 stock_names.json 读取
+        if stock_name is None:
+            stock_name = get_stock_name(clean_symbol)
+        
         try:
             df = pd.read_csv(file_path, parse_dates=['date'])
             
@@ -329,7 +351,7 @@ def load_data(symbol, start_date='19900101', end_date=None, adjust='qfq', force_
                     needs_update = True
 
                 if not needs_update:
-                    return df
+                    return df, stock_name
             else:
                  needs_update = True
 
@@ -342,29 +364,41 @@ def load_data(symbol, start_date='19900101', end_date=None, adjust='qfq', force_
     
     if needs_update:
         # Fetch from network (Always use clean_symbol)
-        df_new = fetch_data_from_akshare(clean_symbol, start_date=fetch_start_date, end_date=end_date, adjust=adjust)
+        result = fetch_data_from_akshare(clean_symbol, start_date=fetch_start_date, end_date=end_date, adjust=adjust)
         
-        if df_new is not None and not df_new.empty:
-            # 如果是增量更新（fetch_start_date 不是 '19900101'），需要合并旧数据
-            if fetch_start_date != '19900101' and os.path.exists(file_path):
-                # 读取旧缓存数据
-                df_old = pd.read_csv(file_path, parse_dates=['date'])
-                # 合并新旧数据并去重（按日期去重，保留新数据）
-                df = pd.concat([df_old, df_new], ignore_index=True)
-                df = df.drop_duplicates(subset=['date'], keep='last')
-                df = df.sort_values('date').reset_index(drop=True)
-                print(f"Merged data: {len(df_old)} old + {len(df_new)} new = {len(df)} total rows")
-            else:
-                df = df_new
-            
-            print(f"Saving data for {clean_symbol} to {file_path}...")
-            # 存盘前确保日期格式统一
-            df.to_csv(file_path, index=False)
-            return df
+        if result is not None:
+            df_new, stock_name = result
+            if df_new is not None and not df_new.empty:
+                # 如果是增量更新（fetch_start_date 不是 '19900101'），需要合并旧数据
+                if fetch_start_date != '19900101' and os.path.exists(file_path):
+                    # 读取旧缓存数据
+                    df_old = pd.read_csv(file_path, parse_dates=['date'])
+                    # 合并新旧数据并去重（按日期去重，保留新数据）
+                    df = pd.concat([df_old, df_new], ignore_index=True)
+                    df = df.drop_duplicates(subset=['date'], keep='last')
+                    df = df.sort_values('date').reset_index(drop=True)
+                    print(f"Merged data: {len(df_old)} old + {len(df_new)} new = {len(df)} total rows")
+                else:
+                    df = df_new
+                
+                print(f"Saving data for {clean_symbol} to {file_path}...")
+                # 存盘前确保日期格式统一
+                df.to_csv(file_path, index=False)
+                
+                # 保存股票名字到缓存文件
+                if stock_name:
+                    try:
+                        with open(name_cache_path, 'w', encoding='utf-8') as f:
+                            f.write(stock_name)
+                        print(f"Saved stock name '{stock_name}' to {name_cache_path}")
+                    except Exception as e:
+                        print(f"Warning: Failed to save stock name: {e}")
+                
+                return df, stock_name
         else:
-            return None
+            return None, None
     
-    return None
+    return None, None
 
 
 def get_stock_name(symbol):
@@ -375,11 +409,24 @@ def get_stock_name(symbol):
     :return: 中文名称，如果获取失败则返回 None
     
     查询逻辑:
-    1. 如果有 .OF 后缀，删除后缀后只查询场外基金
-    2. 如果是其他后缀，报错提醒
-    3. 如果没有后缀（纯数字），查询顺序：指数 -> 股票 -> 场内基金 -> 场外基金
+    1. 优先从本地映射文件读取
+    2. 如果有 .OF 后缀，删除后缀后只查询场外基金
+    3. 如果是其他后缀，报错提醒
+    4. 如果没有后缀（纯数字），查询顺序：指数 -> 股票 -> 场内基金 -> 场外基金
     """
     symbol_str = str(symbol).strip()
+    
+    # 0. 优先从本地映射文件读取
+    name_cache_file = os.path.join(config.DATA_DIR, 'stock_names.json')
+    if os.path.exists(name_cache_file):
+        try:
+            print("<HS> Trying to read stock names cache...")
+            with open(name_cache_file, 'r', encoding='utf-8') as f:
+                name_map = json.load(f)
+                if symbol_str in name_map:
+                    return name_map[symbol_str]
+        except Exception as e:
+            print(f"Warning: Failed to read stock names cache: {e}")
     
     # 检查是否有后缀
     if '.' in symbol_str:
@@ -434,8 +481,33 @@ def get_stock_name(symbol):
             match = etf_list[etf_list['代码'] == clean_symbol]
             if not match.empty:
                 return match['名称'].iloc[0]
-    except:
-        pass
+            else:
+                print(f"Debug: ETF {clean_symbol} not found in ETF list. Columns: {etf_list.columns.tolist()}")
+        else:
+            print(f"Debug: ETF list is empty or None")
+    except Exception as e:
+        print(f"Debug: Error fetching ETF name for {clean_symbol}: {e}")
+    
+    # 3.1 尝试使用 fund_etf_hist_sina 接口获取名称
+    try:
+        etf_info = ak.fund_etf_hist_sina(symbol=clean_symbol)
+        if etf_info is not None and not etf_info.empty:
+            # 该接口返回的数据中可能包含名称信息
+            # 尝试从返回结果中提取名称
+            if 'name' in etf_info.columns:
+                return etf_info['name'].iloc[0]
+    except Exception as e:
+        print(f"Debug: Error fetching ETF name from sina for {clean_symbol}: {e}")
+    
+    # 3.2 尝试使用 fund_etf_category_sina 接口获取名称
+    try:
+        etf_category = ak.fund_etf_category_sina(symbol="场内基金")
+        if etf_category is not None and not etf_category.empty:
+            match = etf_category[etf_category['基金代码'] == clean_symbol]
+            if not match.empty:
+                return match['基金简称'].iloc[0]
+    except Exception as e:
+        print(f"Debug: Error fetching ETF name from category for {clean_symbol}: {e}")
     
     # 4. 尝试作为 场外基金 获取名称
     try:

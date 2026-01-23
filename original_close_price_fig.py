@@ -11,8 +11,12 @@ def main():
     
     # 1. 加载所有数据 (不进行时间过滤，以查看完整数据情况，或者根据需求过滤？)
     # 既然是 "检查拉取到的数据"，通常指检查本地缓存或新拉取的数据文件整体。
-    # data_loader.load_data 会返回整个 csv 的内容。
-    df = data_loader.load_data(symbol)
+    # data_loader.load_data 现在返回 (DataFrame, stock_name) 元组
+    result = data_loader.load_data(symbol)
+    if result is not None:
+        df, stock_name = result
+    else:
+        df = None
     
     if df is None or df.empty:
         print(f"Failed to load data for {symbol}")
