@@ -5,7 +5,7 @@ import pandas as pd
 import data_loader
 import config
 from main_v2 import run_backtest_v2
-from main_v4_plotly import create_strategy
+from strategies import create_strategy, get_strategy_params
 import datetime
 import os
 import json
@@ -25,7 +25,12 @@ def load_input_cache():
         return []
     try:
         with open(CACHE_FILE, 'r') as f:
-            return json.load(f)
+            cache = json.load(f)
+            # Handle old format (list of dicts) and new format (list of strings)
+            if cache and isinstance(cache[0], dict):
+                # Convert old format to new format (strings only)
+                return [item['symbol'] for item in cache]
+            return cache
     except:
         return []
 
@@ -33,12 +38,13 @@ def save_input_cache(symbol):
     if not symbol:
         return
     cache = load_input_cache()
+    
     # Remove if exists to move to top
     if symbol in cache:
         cache.remove(symbol)
     cache.insert(0, symbol)
-    # Keep only last 6
-    cache = cache[:6]
+    # Keep only last 10
+    cache = cache[:10]
     
     # Ensure directory exists (just in case)
     os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
@@ -51,47 +57,59 @@ def save_input_cache(symbol):
 # Layout
 # ==========================================
 app.layout = html.Div([
-    html.H1("Stock Strategy Backtest Dashboard", style={'textAlign': 'center'}),
+    html.H1("Stock Strategy Backtest Dashboard", style={'textAlign': 'center', 'padding': '20px 0'}),
 
-    # Input Section
+    # Main Container with Flex Layout
     html.Div([
-        html.Label("Symbol: ", style={'fontWeight': 'bold', 'marginRight': '10px'}),
-        dcc.Input(
-            id='input-symbol',
-            type='text',
-            value=config.SYMBOL,
-            placeholder='e.g. 513180',
-            debounce=True, # Wait for Enter key
-            list='history-list', # Link to datalist
-            style={'marginRight': '10px'}
-        ),
-        html.Datalist(id='history-list', children=[
-            html.Option(value=s) for s in load_input_cache()
-        ]),
-        html.Button('Confirm / Analyze', id='submit-val', n_clicks=0, style={'cursor': 'pointer'}),
-    ], style={'textAlign': 'center', 'marginBottom': '20px', 'padding': '10px', 'backgroundColor': '#f9f9f9'}),
+        # Left Side: Main Content (75%)
+        html.Div([
+            # Input Section
+            html.Div([
+                html.Label("Symbol: ", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                dcc.Input(
+                    id='input-symbol',
+                    type='text',
+                    value=config.SYMBOL,
+                    placeholder='e.g. 513180',
+                    debounce=True, # Wait for Enter key
+                    list='history-list', # Link to datalist
+                    style={'marginRight': '10px'}
+                ),
+                html.Datalist(id='history-list', children=[
+                    html.Option(value=s) for s in load_input_cache()
+                ]),
+                html.Button('Confirm / Analyze', id='submit-val', n_clicks=0, style={'cursor': 'pointer'}),
+            ], style={'textAlign': 'center', 'marginBottom': '20px', 'padding': '10px', 'backgroundColor': '#f9f9f9'}),
 
-    # Top Chart: Strategy Results (The "Result" Chart)
-    # This chart updates based on the selection in the bottom chart
-    html.Div([
-        html.H3("Strategy Performance (Selected Range)", style={'textAlign': 'center'}),
-        dcc.Loading(
-            id="loading-strategy",
-            children=[dcc.Graph(id='strategy-chart')],
-            type="circle"
-        ),
-    ], style={'marginBottom': '30px', 'borderBottom': '1px solid #ddd', 'paddingBottom': '20px'}),
+            # Top Chart: Strategy Results (The "Result" Chart)
+            # This chart updates based on the selection in the bottom chart
+            html.Div([
+                html.H3("Strategy Performance (Selected Range)", style={'textAlign': 'center'}),
+                dcc.Loading(
+                    id="loading-strategy",
+                    children=[dcc.Graph(id='strategy-chart')],
+                    type="circle"
+                ),
+            ], style={'marginBottom': '40px', 'borderBottom': '1px solid #ddd', 'paddingBottom': '20px'}),
 
-    # Bottom Chart: Full History (The "Selector" Chart)
-    html.Div([
-        html.H3("Full History & Range Selector", style={'textAlign': 'center'}),
-        html.P("Drag the range slider below or zoom in the chart to select a time interval.", style={'textAlign': 'center', 'color': '#666'}),
-        dcc.Loading(
-            id="loading-history",
-            children=[dcc.Graph(id='history-chart')],
-            type="circle"
-        ),
-    ]),
+            # Bottom Chart: Full History (The "Selector" Chart)
+            html.Div([
+                html.H3("Full History & Range Selector", style={'textAlign': 'center'}),
+                html.P("Drag the range slider below or zoom in the chart to select a time interval.", style={'textAlign': 'center', 'color': '#666'}),
+                dcc.Loading(
+                    id="loading-history",
+                    children=[dcc.Graph(id='history-chart')],
+                    type="circle"
+                ),
+            ]),
+        ], style={'width': '75%', 'paddingRight': '20px'}),
+
+        # Right Side: Recent History Sidebar (25%)
+        html.Div([
+            html.H3("Recent Symbols", style={'textAlign': 'center', 'borderBottom': '2px solid #007bff', 'paddingBottom': '10px'}),
+            html.Div(id='recent-symbols-list', style={'marginTop': '15px'}),
+        ], style={'width': '25%', 'backgroundColor': '#f5f5f5', 'padding': '20px', 'borderLeft': '1px solid #ddd', 'minHeight': '600px'}),
+    ], style={'display': 'flex', 'flexDirection': 'row', 'width': '100%', 'maxWidth': '1600px', 'margin': '0 auto', 'padding': '20px', 'fontFamily': 'Arial, sans-serif'}),
     
     # Hidden store to keep track of the current valid symbol to prevent errors during typing
     dcc.Store(id='current-symbol-store'),
@@ -99,7 +117,11 @@ app.layout = html.Div([
     dcc.Store(id='debounced-relayout-data'),
     # Store for loaded data (to avoid repeated loading)
     dcc.Store(id='data-store'),
-], style={'maxWidth': '1200px', 'margin': '0 auto', 'padding': '20px', 'fontFamily': 'Arial, sans-serif'})
+    # Store for recent symbol click data
+    dcc.Store(id='recent-symbol-click', data=None),
+    # Hidden div to track click count for recent symbols
+    html.Div(id='recent-symbol-click-count', style={'display': 'none'}),
+])
 
 
 # ==========================================
@@ -119,7 +141,8 @@ def generate_strategy_figure(symbol, start_date, end_date, df=None):
     # Run Backtests
     for strat_type in draw_list:
         try:
-            strategy, strategy_name = create_strategy(strat_type)
+            params = get_strategy_params(strat_type, config)
+            strategy, strategy_name = create_strategy(strat_type, params)
             if strategy is None:
                 continue
                 
@@ -232,22 +255,78 @@ app.clientside_callback(
     Input('history-chart', 'relayoutData')
 )
 
-# 1. Update Current Symbol Store, History Chart (Bottom) & History List & Data Store
+# 0.1 Clientside Callback for Hover Effects on Recent Symbol Items
+app.clientside_callback(
+    """
+    function(n_clicks) {
+        // Add hover effect styles dynamically
+        const style = document.createElement('style');
+        style.textContent = `
+            [id^="recent-symbol-item"]:hover {
+                background-color: #e3f2fd !important;
+                border-color: #007bff !important;
+                transform: translateX(5px);
+            }
+        `;
+        document.head.appendChild(style);
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('recent-symbol-click', 'data', allow_duplicate=True),
+    Input('recent-symbols-list', 'children'),
+    prevent_initial_call=True
+)
+
+# 1. Update Current Symbol Store, History Chart (Bottom) & History List & Data Store & Recent Symbols List
 @app.callback(
     [Output('history-chart', 'figure'),
      Output('current-symbol-store', 'data'),
      Output('history-list', 'children'),
-     Output('data-store', 'data')],
-    [Input('submit-val', 'n_clicks')],
-    [State('input-symbol', 'value')]
+     Output('data-store', 'data'),
+     Output('recent-symbols-list', 'children')],
+    [Input('submit-val', 'n_clicks'),
+     Input('recent-symbol-click-count', 'children')],
+    [State('input-symbol', 'value'),
+     State('recent-symbol-click', 'data')]
 )
-def update_history(n_clicks, symbol_input):
-    # Default to config symbol if input is empty
-    symbol = symbol_input if symbol_input else config.SYMBOL
+def update_history(n_clicks, recent_click_count, symbol_input, recent_symbol_data):
+    # Check which input triggered the callback
+    ctx = callback_context
+    if not ctx.triggered:
+        symbol = config.SYMBOL
+    else:
+        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        if triggered_id == 'recent-symbol-click' and recent_symbol_data:
+            symbol = recent_symbol_data
+        else:
+            symbol = symbol_input if symbol_input else config.SYMBOL
     
     # Update Cache
     new_cache = save_input_cache(symbol)
     datalist_children = [html.Option(value=s) for s in new_cache]
+    
+    # Generate recent symbols list for sidebar
+    recent_list_children = []
+    for idx, symbol_code in enumerate(new_cache):
+        stock_name = data_loader.get_stock_name(symbol_code, data_dir=config.DATA_DIR)
+        display_name = f"{symbol_code} - {stock_name}" if stock_name else symbol_code
+        recent_list_children.append(
+            html.Div([
+                html.Div(display_name, style={'flex': '1', 'overflow': 'hidden', 'textOverflow': 'ellipsis', 'whiteSpace': 'nowrap'}),
+                html.Span('→', style={'color': '#007bff', 'fontWeight': 'bold', 'marginLeft': '5px'})
+            ], id={'type': 'recent-symbol-item', 'index': idx},
+               style={
+                   'padding': '10px',
+                   'marginBottom': '8px',
+                   'backgroundColor': '#fff',
+                   'borderRadius': '5px',
+                   'cursor': 'pointer',
+                   'display': 'flex',
+                   'alignItems': 'center',
+                   'border': '1px solid #e0e0e0',
+                   'transition': 'all 0.2s'
+               })
+        )
 
     # Load full history (from 1990 to now/future to ensure we get everything)
     # We force 'qfq' (Forward Adjusted) as per main scripts
@@ -257,7 +336,8 @@ def update_history(n_clicks, symbol_input):
     try:
         # NOTE: data_loader.load_data handles caching and fetching
         # load_data now returns (DataFrame, stock_name) tuple
-        result = data_loader.load_data(symbol, start_date='19900101', end_date=end_date_future, adjust='qfq')
+        result = data_loader.load_data(symbol, start_date='19900101', end_date=end_date_future, adjust='qfq',
+                                            data_dir=config.DATA_DIR, strategy_type=config.STRATEGY_TYPE)
         if result is not None:
             df, stock_name = result
         else:
@@ -269,11 +349,35 @@ def update_history(n_clicks, symbol_input):
     display_name = f"{symbol} - {stock_name}" if stock_name else symbol
     print(f"Debug: Stock name for '{symbol}': {stock_name}")
 
+    # Update cache and regenerate recent symbols list
+    new_cache = save_input_cache(symbol)
+    recent_list_children = []
+    for idx, symbol_code in enumerate(new_cache):
+        item_stock_name = data_loader.get_stock_name(symbol_code, data_dir=config.DATA_DIR)
+        item_display_name = f"{symbol_code} - {item_stock_name}" if item_stock_name else symbol_code
+        recent_list_children.append(
+            html.Div([
+                html.Div(item_display_name, style={'flex': '1', 'overflow': 'hidden', 'textOverflow': 'ellipsis', 'whiteSpace': 'nowrap'}),
+                html.Span('→', style={'color': '#007bff', 'fontWeight': 'bold', 'marginLeft': '5px'})
+            ], id={'type': 'recent-symbol-item', 'index': idx},
+               style={
+                   'padding': '10px',
+                   'marginBottom': '8px',
+                   'backgroundColor': '#fff',
+                   'borderRadius': '5px',
+                   'cursor': 'pointer',
+                   'display': 'flex',
+                   'alignItems': 'center',
+                   'border': '1px solid #e0e0e0',
+                   'transition': 'all 0.2s'
+               })
+        )
+
     fig = go.Figure()
 
     if df is None or df.empty:
         fig.add_annotation(text=f"Could not load data for {symbol}", showarrow=False)
-        return fig, symbol, datalist_children, None
+        return fig, symbol, datalist_children, None, recent_list_children
     
     # Convert df to dict for storage (JSON serializable)
     df_dict = df.to_dict('records')
@@ -305,7 +409,7 @@ def update_history(n_clicks, symbol_input):
         margin=dict(l=40, r=40, t=40, b=40)
     )
     
-    return fig, symbol, datalist_children, df_dict
+    return fig, symbol, datalist_children, df_dict, recent_list_children
 
 
 # 2. Update Strategy Chart (Top) based on History Selection
@@ -370,6 +474,54 @@ def update_strategy(relayoutData, symbol, data_store):
     # The backtest engine handles filtering, but we pass strings.
     
     return generate_strategy_figure(symbol, start_date, end_date, df=df)
+
+
+# 3. Handle Click on Recent Symbol Items
+@app.callback(
+    [Output('recent-symbol-click', 'data'),
+     Output('recent-symbol-click-count', 'children')],
+    [Input({'type': 'recent-symbol-item', 'index': dash.ALL}, 'n_clicks')],
+    [State('recent-symbols-list', 'children')]
+)
+def handle_recent_symbol_click(n_clicks, recent_list_children):
+    """Handle click events on recent symbol items in the sidebar"""
+    if not n_clicks or all(n is None for n in n_clicks):
+        return dash.no_update, dash.no_update
+    
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update
+    
+    # Get the clicked item's index
+    triggered_id = ctx.triggered[0]['prop_id']
+    # Parse the index from the triggered ID
+    # Format: {'type': 'recent-symbol-item', 'index': 0}.n_clicks
+    try:
+        import re
+        match = re.search(r"'index': (\d+)", triggered_id)
+        if match:
+            clicked_index = int(match.group(1))
+            # Get the symbol from the cache (cache is now a list of strings)
+            cache = load_input_cache()
+            if clicked_index < len(cache):
+                symbol = cache[clicked_index]
+                return symbol, 1
+    except Exception as e:
+        print(f"Error handling click: {e}")
+    
+    return dash.no_update, dash.no_update
+
+
+# 4. Update Input Symbol when Recent Symbol is Clicked
+@app.callback(
+    Output('input-symbol', 'value'),
+    [Input('recent-symbol-click', 'data')]
+)
+def update_input_symbol(recent_symbol):
+    """Update the input symbol field when a recent symbol is clicked"""
+    if recent_symbol:
+        return recent_symbol
+    return dash.no_update
 
 
 if __name__ == '__main__':

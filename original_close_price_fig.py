@@ -12,7 +12,8 @@ def main():
     # 1. 加载所有数据 (不进行时间过滤，以查看完整数据情况，或者根据需求过滤？)
     # 既然是 "检查拉取到的数据"，通常指检查本地缓存或新拉取的数据文件整体。
     # data_loader.load_data 现在返回 (DataFrame, stock_name) 元组
-    result = data_loader.load_data(symbol)
+    result = data_loader.load_data(symbol, data_dir=config.DATA_DIR,
+                                      end_date=config.CACHE_END_DATE)
     if result is not None:
         df, stock_name = result
     else:
